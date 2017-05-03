@@ -1,8 +1,8 @@
 (ns clj-ipaddr.core
-  ;; TODO: clean up any unused imports
-  (:import [clojure.lang BigInt]
-           [com.google.common.primitives Ints]
-           [java.math BigInteger]
+  (:refer-clojure :exclude [bytes])
+  (:require [clj-ipaddr.util.byte-array :as util]
+            [clojure.math.numeric-tower :as math])
+  (:import [clojure.lang IPersistentSet ILookup]
            [java.net InetAddress Inet4Address Inet6Address]))
 
 (defprotocol IPAddressRepresentation
@@ -12,25 +12,76 @@
 (extend-type (Class/forName "[B")
   IPAddressRepresentation
   (ip-address [bs] (InetAddress/getByAddress bs)))
+(derive (Class/forName "[B") `IPAddressRepresentation)
+
+;; TODO: check the derivations above and below. Are they still
+;; necessary? should I make a separate hierarchy? Polluting the global
+;; hierarchy could be considered rude.
 
 (extend-protocol IPAddressRepresentation
   String
   (ip-address [s] (InetAddress/getByName s)))
+(derive String `IPAddressRepresentation)
 
-;; TODO: consider removing these two. Cute but perhaps not useful.
 (defprotocol IPAddress
-  (version [this]))
+  (version [this])
+  (bytes [this]))
 
 (extend-protocol IPAddress
   Inet4Address
-  (version [_] #_::ipv4 4)
+  (version [_] 4)
+  (bytes [this] (.getAddress this))
   Inet6Address
-  (version [_] #_::ipv6 6))
+  (version [_] 6)
+  (bytes [this] (.getAddress this)))
 
-;; TODO: write the network-making stuff.
+(deftype IPNetwork
+    [seed mask]
+  ILookup
+  (valAt [_ key] ({:seed seed :mask mask} key))
+  (valAt [_ key not-found] ({:seed seed :mask mask} key not-found))
+  IPersistentSet
+  (count [_]
+    (->> mask
+         .getAddress
+         util/count-unset
+         (math/expt 2)))
+  (contains [_ ip]
+    (let [[ip seed mask] (map #(.getAddress %) [ip seed mask])]
+      (-> (util/bit-or
+           ;; either the seed and the ip agree...
+           (util/bit-not (util/bit-xor seed ip))
+           ;; ...or the mask permits any value
+           (util/bit-not mask))
+          util/count-unset
+          zero?)))
+  (seq [_]
+    ;; TODO:
+    )
+  (empty [_] (sorted-set))
+  (equiv [_ {other-seed :seed other-mask :mask}]
+    ;; TODO: check
+    (and (= seed other-seed) (= mask other-mask))))
+(alter-meta! #'->IPNetwork #(assoc % :private true))
+;; TODO: consider making a print-method. For some reason, IPNetworks
+;; are printing as empty sets, which is misleading. It is probably
+;; because as I write this, seq is unimplemented, so this really needs
+;; to change or big sets will be way too expensive to print.
 
-;; keep in mind: (1) clojure numbers are naturally longs, not
-;; ints. (2) BigInt might be a better choice than BigInteger. I even
-;; might be able to get away with using only BigInts if
-;; implementation-wise, they fall back to being primitives (in our
-;; case, ints) when the values are small.
+(defn- unset-masked-bits
+  "Unset every bit in ip that is unset in mask."
+  [ip mask]
+  (ip-address (util/bit-and (bytes mask) (bytes ip))))
+
+(defmulti ip-network (fn [& xs] (mapv class xs)))
+;; TODO: need to make sure that every unset bit in the mask is unset
+;; in the seed. I have implemented it but it needs testing.
+(defmethod ip-network [Inet4Address Inet4Address] [seed mask]
+  (->IPNetwork (unset-masked-bits seed mask) mask))
+(defmethod ip-network [Inet6Address Inet6Address] [seed mask]
+  (->IPNetwork (unset-masked-bits seed mask) mask))
+(defmethod ip-network
+  [`IPAddressRepresentation `IPAddressRepresentation]
+  [seed mask]
+  (ip-network (ip-address seed) (ip-address mask)))
+;; TODO: arity-1 which takes "x.x.x.x/x"
