@@ -3,6 +3,7 @@
   (:require [clj-ipaddr.util.byte-array :as util]
             [clojure.math.numeric-tower :as math])
   (:import [clojure.lang IPersistentSet ILookup]
+           [java.io Writer]
            [java.net InetAddress Inet4Address Inet6Address]))
 
 (defprotocol IPAddressRepresentation
@@ -47,7 +48,7 @@
          util/count-unset
          (math/expt 2)))
   (contains [_ ip]
-    (let [[ip seed mask] (map #(.getAddress %) [ip seed mask])]
+    (let [[ip seed mask] (map bytes [ip seed mask])]
       (-> (util/bit-or
            ;; either the seed and the ip agree...
            (util/bit-not (util/bit-xor seed ip))
@@ -55,19 +56,32 @@
            (util/bit-not mask))
           util/count-unset
           zero?)))
+  ;; FIXME: not giving the correct
+  ;; order. (seq (ip-network "192.168.0.0" "255.255.255.245")) is a
+  ;; failing test case.
   (seq [_]
-    ;; TODO:
-    )
+    (let [seed       (bytes seed)
+          orig-mask  (bytes mask)
+          apply-mask (fn [mask]
+                       (util/bit-or
+                        seed
+                        (util/bit-and mask (util/bit-not orig-mask))))
+          mask-xf (comp (map apply-mask)
+                        (map ip-address))]
+      ;; TODO: a sorted set is best here but I have not
+      ;; got (into (sorted-set)) working
+      (sequence mask-xf (util/all-masks orig-mask))))
   (empty [_] (sorted-set))
   (equiv [_ {other-seed :seed other-mask :mask}]
     ;; TODO: check
     (and (= seed other-seed) (= mask other-mask))))
 (alter-meta! #'->IPNetwork #(assoc % :private true))
-;; TODO: consider making a print-method. For some reason, IPNetworks
-;; are printing as empty sets, which is misleading. It is probably
-;; because as I write this, seq is unimplemented, so this really needs
-;; to change or big sets will be way too expensive to print.
+;; FIXME: it is still printing as a set.
+(defmethod print-method IPNetwork [{:keys [seed mask] :as network} ^Writer w]
+  (.write w (format "<IP network broadcast: %s mask: %s addresses: %s>"
+                    seed mask (count network))))
 
+;; TODO: move to a utils file?
 (defn- unset-masked-bits
   "Unset every bit in ip that is unset in mask."
   [ip mask]

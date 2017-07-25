@@ -20,12 +20,29 @@
 (def bit-and (comp byte-array (partial map core/bit-and)))
 (def bit-not (comp byte-array (partial map core/bit-not)))
 
-;; TODO: finish
+;; FIXME: I think this produces basically the right masks but it makes
+;; duplicates which is no good.
 (defn all-masks
-  ([subnet-mask] (all-masks subnet-mask 0))
+  ([subnet-mask] (all-masks (vec subnet-mask) 0))
   ([subnet-mask i]
-   (let [byte-index (- (count subnet-mask) (quot i 8))
+   (let [byte-index (- (-> subnet-mask count dec) (quot i 8))
          bit-index  (mod i 8)]
-     (when (pos? byte-index)
-       (let [bit (bit-test (nth subnet-mask byte-index) bit-index)]
-         )))))
+     (if-not (neg? byte-index)
+       (let [byte (nth subnet-mask byte-index)]
+         (if (bit-test byte bit-index)
+           (all-masks subnet-mask (inc i))
+           (lazy-cat
+            ;; continue with bit unset
+            (all-masks subnet-mask (inc i))
+            ;; continue with bit set
+            (all-masks (assoc subnet-mask
+                              byte-index
+                              (bit-set byte bit-index))
+                       (inc i)))))
+       [subnet-mask]))))
+
+(defn simple-mask
+  "Yields a mask of size bytes with the first n bits set"
+  [size n]
+  ;; TODO: implement, possibly change arguments
+  )
